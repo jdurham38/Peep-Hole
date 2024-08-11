@@ -5,8 +5,8 @@
 #include <WebServer.h>
 #include <Ticker.h>
 
-const char* ssid = "helloworld";
-const char* password = "Martinluther12!$";
+const char* ssid = "";
+const char* password = "";
 
 const int pirPin = 13; // GPIO pin connected to PIR sensor
 volatile bool motionDetected = false;
