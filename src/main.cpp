@@ -3,31 +3,14 @@
 #include "camera_index.h"
 #include "camera_pins.h"
 #include <WebServer.h>
-#include <Ticker.h>
+#include <esp_task_wdt.h>
 
-const char* ssid = "";
-const char* password = "";
-
-const int pirPin = 13; // GPIO pin connected to PIR sensor
-volatile bool motionDetected = false;
-volatile bool streaming = false;
-Ticker stopStreamTicker;
-unsigned long lastMotionTime = 0;
+const char* ssid = "**********";
+const char* password = "**********";
 
 WebServer server(80);
-
-void IRAM_ATTR detectMotion() {
-  motionDetected = true;
-  lastMotionTime = millis();
-}
-
-void stopStream() {
-  if (millis() - lastMotionTime >= 5000) { // Check if 5 seconds have passed since last motion
-    streaming = false;
-    stopStreamTicker.detach();
-    Serial.println("Streaming stopped due to inactivity.");
-  }
-}
+unsigned long lastHeartbeat = 0;
+const int WDT_TIMEOUT = 10;  // seconds
 
 void handleRoot() {
   server.send_P(200, "text/html", index_html);
@@ -37,12 +20,10 @@ void handleNotFound() {
   server.send(404, "text/plain", "404: Not found");
 }
 
-void handleStream() {
-  if (!streaming) {
-    server.send(403, "text/plain", "Streaming not allowed");
-    return;
-  }
+const int FPS = 10; // Target 10 frames per second
+const int frame_delay = 1000 / FPS;
 
+void handleStream() {
   WiFiClient client = server.client();
   String boundary = "frame";
   String response = "HTTP/1.1 200 OK\r\n"
@@ -50,7 +31,7 @@ void handleStream() {
                     "Connection: close\r\n\r\n";
   server.sendContent(response);
 
-  while (client.connected() && streaming) {
+  while (client.connected()) {
     camera_fb_t * fb = esp_camera_fb_get();
     if (!fb) {
       Serial.println("Camera capture failed");
@@ -65,42 +46,16 @@ void handleStream() {
 
     esp_camera_fb_return(fb);
 
-    delay(10); // Adjust or remove this delay for better performance
+    delay(frame_delay); // Delay between frames to control FPS
   }
+  client.stop();
   Serial.println("Client disconnected from stream.");
-}
-
-void handleEvents() {
-  WiFiClient client = server.client();
-  if (!client) {
-    Serial.println("No client for events.");
-    return;
-  }
-
-  String response = "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Cache-Control: no-cache\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n";
-  client.print(response);
-  Serial.println("Client connected for events.");
-
-  while (client.connected()) {
-    if (streaming) {
-      String event = "event: streamstart\n";
-      event += "data: Stream started\n\n";
-      client.print(event);
-      delay(1000); // Sending updates every second, adjust as necessary
-    }
-  }
-  Serial.println("Client disconnected from events.");
 }
 
 
 void startCameraServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/stream", HTTP_GET, handleStream);
-  server.on("/events", HTTP_GET, handleEvents);
   server.onNotFound(handleNotFound);
   server.begin();
 }
@@ -109,9 +64,6 @@ void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println();
-
-  pinMode(pirPin, INPUT);
-  attachInterrupt(digitalPinToInterrupt(pirPin), detectMotion, RISING);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -135,14 +87,15 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  config.frame_size = FRAMESIZE_CIF; // Reduce frame size for lower latency
-  config.jpeg_quality = 10;          // Adjust JPEG quality to balance quality and speed
+  // Improve stream quality
+  config.frame_size = FRAMESIZE_QVGA; // Use higher resolution
+  config.jpeg_quality = 12;          // Lower quality value for higher quality image
   config.fb_count = 1;
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
-    return;
+    ESP.restart();  // Restart the ESP32 if the camera fails to initialize
   }
 
   WiFi.begin(ssid, password);
@@ -154,18 +107,33 @@ void setup() {
 
   startCameraServer();
   Serial.printf("Camera Ready! Use 'http://%s' to connect\n", WiFi.localIP().toString().c_str());
+
+  // Initialize watchdog timer
+  esp_task_wdt_init(WDT_TIMEOUT, true);  // Enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL);  // Add current thread to WDT
 }
 
 void loop() {
-  if (motionDetected) {
-    motionDetected = false;
-    if (!streaming) {
-      streaming = true;
-      Serial.println("Motion detected! Starting stream...");
-      stopStreamTicker.attach(5, stopStream); // Schedule the stopStream function to run every 5 seconds
+  server.handleClient();
+
+  // Check Wi-Fi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection lost. Reconnecting...");
+    WiFi.disconnect();
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      Serial.println("Reconnecting to WiFi...");
     }
+    Serial.println("Reconnected to WiFi");
   }
 
-  server.handleClient();
-}
+  // Heartbeat to check server responsiveness
+  if (millis() - lastHeartbeat > 5000) {
+    Serial.println("Heartbeat: Server is running.");
+    lastHeartbeat = millis();
+  }
 
+  // Reset watchdog timer
+  esp_task_wdt_reset();
+}
