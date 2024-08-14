@@ -19,50 +19,31 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <h1>ESP32-CAM Video Stream</h1>
-    <img src="http://10.0.0.157/stream" id="stream" width="640" height="480">
-<script>
-    const stream = document.getElementById('stream');
-    let eventSource;
-    let reconnectAttempts = 0;
+    <button id="startButton" onclick="startStream()">Start Stream</button>
+    <button id="stopButton" onclick="stopStream()">Stop Stream</button>
+    <br><br>
+    <img id="stream" src="" style="display:none;">
+    <script>
+        const streamElement = document.getElementById('stream');
 
-    function updateStream() {
-        stream.src = 'http://10.0.0.157/stream?' + new Date().getTime();
-    }
-
-    function tryReconnectEventSource() {
-        console.log('Attempting to reconnect EventSource...');
-        setupEventSource();
-    }
-
-    function setupEventSource() {
-        if (eventSource) {
-            eventSource.close();
+        function startStream() {
+            streamElement.src = "/stream";
+            streamElement.style.display = "block";
         }
 
-        eventSource = new EventSource('/events');
-        eventSource.onmessage = function(event) {
-            if (event.data === 'Stream started') {
-                updateStream();
-            }
+        function stopStream() {
+            streamElement.src = "";
+            streamElement.style.display = "none";
+        }
+
+        // Optionally add a way to auto-refresh the image if it's not working
+        streamElement.onerror = function() {
+            console.error('Stream error encountered. Trying to reconnect...');
+            setTimeout(() => {
+                startStream();
+            }, 5000); // Try to reconnect stream every 5 seconds
         };
-
-        eventSource.onerror = function(event) {
-            console.error('EventSource failed:', event);
-            eventSource.close();
-            reconnectAttempts++;
-            setTimeout(tryReconnectEventSource, Math.min(30000, 5000 * reconnectAttempts)); // Incremental backoff
-        };
-    }
-
-    setupEventSource();
-
-    // Optionally add a way to auto-refresh the image if it's not working
-    stream.onerror = function() {
-        console.error('Stream error encountered. Trying to reconnect...');
-        setTimeout(updateStream, 5000); // Try to reconnect stream every 5 seconds
-    };
-</script>
-
+    </script>
 </body>
 </html>
 )rawliteral";
